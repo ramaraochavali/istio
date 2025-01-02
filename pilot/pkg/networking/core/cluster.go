@@ -114,8 +114,12 @@ func (configgen *ConfigGeneratorImpl) BuildDeltaClusters(proxy *model.Proxy, upd
 		var svcs []*model.Service
 		switch key.Kind {
 		case kind.ServiceEntry:
-			svcs, deleted = configgen.deltaFromServices(key, proxy, updates.Push, serviceClusters,
+			var svc *model.Service
+			svc, deleted = configgen.deltaFromServices(key, proxy, updates.Push, serviceClusters,
 				servicePortClusters, subsetClusters)
+			if svc != nil {
+				svcs = append(svcs, svc)
+			}
 		case kind.DestinationRule:
 			svcs, deleted = configgen.deltaFromDestinationRules(key, proxy, subsetClusters)
 		}
@@ -144,27 +148,25 @@ func (configgen *ConfigGeneratorImpl) BuildDeltaClusters(proxy *model.Proxy, upd
 // deltaFromServices computes the delta clusters from the updated services.
 func (configgen *ConfigGeneratorImpl) deltaFromServices(key model.ConfigKey, proxy *model.Proxy, push *model.PushContext,
 	serviceClusters map[string]sets.String, servicePortClusters map[string]map[int]string, subsetClusters map[string]sets.String,
-) ([]*model.Service, []string) {
+) (*model.Service, []string) {
 	var deletedClusters []string
-	var services []*model.Service
-	service := push.ServiceForHostname(proxy, host.Name(key.Name))
+	existingService := push.ServiceForHostname(proxy, host.Name(key.Name))
 	// push.ServiceForHostname will return nil if the proxy doesn't care about the service OR it was deleted.
 	// we can cross-reference with WatchedResources to figure out which services were deleted.
-	if service == nil {
+	if existingService == nil {
 		// We assume a service was deleted and delete all clusters for that service.
 		deletedClusters = append(deletedClusters, serviceClusters[key.Name].UnsortedList()...)
 		deletedClusters = append(deletedClusters, subsetClusters[key.Name].UnsortedList()...)
 	} else {
 		// Service exists. If the service update has port change, we need to the corresponding port clusters.
-		services = append(services, service)
-		for port, cluster := range servicePortClusters[service.Hostname.String()] {
+		for port, cluster := range servicePortClusters[existingService.Hostname.String()] {
 			// if this service port is removed, we can conclude that it is a removed cluster.
-			if _, exists := service.Ports.GetByPort(port); !exists {
+			if _, exists := existingService.Ports.GetByPort(port); !exists {
 				deletedClusters = append(deletedClusters, cluster)
 			}
 		}
 	}
-	return services, deletedClusters
+	return existingService, deletedClusters
 }
 
 // deltaFromDestinationRules computes the delta clusters from the updated destination rules.
