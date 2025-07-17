@@ -2088,7 +2088,6 @@ func TestSelectVirtualService(t *testing.T) {
 				Route: []*networking.HTTPRouteDestination{
 					{
 						Destination: &networking.Destination{
-							// Subset: "some-subset",
 							Host: "example.org",
 							Port: &networking.PortSelector{
 								Number: 61,
@@ -2378,4 +2377,160 @@ func buildHTTPService(hostname string, v visibility.Instance, ip, namespace stri
 
 	service.Ports = Ports
 	return service
+}
+
+func BenchmarkSelectVirtualServices(b *testing.B) {
+	// Create test data similar to TestSelectVirtualService
+	services := []*Service{
+		buildHTTPService("bookinfo.com", visibility.Public, wildcardIP, "default", 9999, 70),
+		buildHTTPService("private.com", visibility.Private, wildcardIP, "default", 9999, 80),
+		buildHTTPService("test.com", visibility.Public, "8.8.8.8", "not-default", 8080),
+		buildHTTPService("test-private.com", visibility.Private, "9.9.9.9", "not-default", 80, 70),
+		buildHTTPService("test-private-2.com", visibility.Private, "9.9.9.10", "not-default", 60),
+		buildHTTPService("test-headless.com", visibility.Public, wildcardIP, "not-default", 8888),
+		buildHTTPService("test-headless-someother.com", visibility.Public, wildcardIP, "some-other-ns", 8888),
+		buildHTTPService("a.test1.wildcard.com", visibility.Public, wildcardIP, "default", 8888),
+		buildHTTPService("*.test2.wildcard.com", visibility.Public, wildcardIP, "default", 8888),
+	}
+
+	hostsByNamespace := make(map[string]hostClassification)
+	for _, svc := range services {
+		ns := svc.Attributes.Namespace
+		if _, exists := hostsByNamespace[ns]; !exists {
+			hostsByNamespace[ns] = hostClassification{exactHosts: sets.New[host.Name](), allHosts: make([]host.Name, 0)}
+		}
+
+		hc := hostsByNamespace[ns]
+		hc.allHosts = append(hc.allHosts, svc.Hostname)
+		hostsByNamespace[ns] = hc
+
+		if !svc.Hostname.IsWildCarded() {
+			hostsByNamespace[ns].exactHosts.Insert(svc.Hostname)
+		}
+	}
+
+	// Create virtual services
+	virtualServiceSpec1 := &networking.VirtualService{
+		Hosts:    []string{"test-private-2.com"},
+		Gateways: []string{"mesh"},
+		Http: []*networking.HTTPRoute{
+			{
+				Route: []*networking.HTTPRouteDestination{
+					{
+						Destination: &networking.Destination{
+							Host: "example.org",
+							Port: &networking.PortSelector{
+								Number: 61,
+							},
+						},
+						Weight: 100,
+					},
+				},
+			},
+		},
+	}
+
+	virtualService1 := config.Config{
+		Meta: config.Meta{
+			GroupVersionKind: gvk.VirtualService,
+			Name:             "acme-v1",
+			Namespace:        "not-default",
+		},
+		Spec: virtualServiceSpec1,
+	}
+
+	virtualService2 := config.Config{
+		Meta: config.Meta{
+			GroupVersionKind: gvk.VirtualService,
+			Name:             "acme-v2",
+			Namespace:        "not-default",
+		},
+		Spec: virtualServiceSpec1,
+	}
+
+	virtualService3 := config.Config{
+		Meta: config.Meta{
+			GroupVersionKind: gvk.VirtualService,
+			Name:             "acme-v3",
+			Namespace:        "not-default",
+		},
+		Spec: virtualServiceSpec1,
+	}
+
+	virtualService4 := config.Config{
+		Meta: config.Meta{
+			GroupVersionKind: gvk.VirtualService,
+			Name:             "acme-v4",
+			Namespace:        "not-default",
+		},
+		Spec: virtualServiceSpec1,
+	}
+
+	virtualService5 := config.Config{
+		Meta: config.Meta{
+			GroupVersionKind: gvk.VirtualService,
+			Name:             "acme-v5",
+			Namespace:        "not-default",
+		},
+		Spec: virtualServiceSpec1,
+	}
+
+	virtualService6 := config.Config{
+		Meta: config.Meta{
+			GroupVersionKind: gvk.VirtualService,
+			Name:             "acme-v6",
+			Namespace:        "not-default",
+		},
+		Spec: virtualServiceSpec1,
+	}
+
+	virtualService7 := config.Config{
+		Meta: config.Meta{
+			GroupVersionKind: gvk.VirtualService,
+			Name:             "acme2-v1",
+			Namespace:        "some-other-ns",
+		},
+		Spec: virtualServiceSpec1,
+	}
+
+	virtualService8 := config.Config{
+		Meta: config.Meta{
+			GroupVersionKind: gvk.VirtualService,
+			Name:             "vs-wildcard-v1",
+			Namespace:        "default",
+		},
+		Spec: virtualServiceSpec1,
+	}
+
+	virtualService9 := config.Config{
+		Meta: config.Meta{
+			GroupVersionKind: gvk.VirtualService,
+			Name:             "service-wildcard-v1",
+			Namespace:        "default",
+		},
+		Spec: virtualServiceSpec1,
+	}
+
+	index := virtualServiceIndex{
+		publicByGateway: map[string][]config.Config{
+			constants.IstioMeshGateway: {
+				virtualService1,
+				virtualService2,
+				virtualService3,
+				virtualService4,
+				virtualService5,
+				virtualService6,
+				virtualService7,
+				virtualService8,
+				virtualService9,
+			},
+		},
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		_ = SelectVirtualServices(index, "some-ns", hostsByNamespace)
+	}
 }

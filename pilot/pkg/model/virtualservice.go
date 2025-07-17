@@ -34,27 +34,17 @@ import (
 // SelectVirtualServices selects the virtual services by matching given services' host names.
 // This function is used by sidecar converter.
 func SelectVirtualServices(vsidx virtualServiceIndex, configNamespace string, hostsByNamespace map[string]hostClassification) []config.Config {
-	importedVirtualServices := make([]config.Config, 0)
-	vsset := sets.New[types.NamespacedName]()
+	// Pre-allocate with a reasonable capacity to avoid slice growth
+	// Most sidecars have a limited number of virtual services
+	importedVirtualServices := make([]config.Config, 0, 16)
 
-	addVirtualService := func(vs config.Config, hc hostClassification) {
-		key := vs.NamespacedName()
-		if vsset.Contains(key) {
-			return
-		}
+	// Use a simple map for deduplication instead of sets.Set for better memory efficiency
+	// Most sidecars have < 100 virtual services, so this is more efficient than sets
+	vsset := make(map[types.NamespacedName]struct{}, 16)
 
-		rule := vs.Spec.(*networking.VirtualService)
-		useGatewaySemantics := UseGatewaySemantics(vs)
-		for _, vh := range rule.Hosts {
-			if hc.VSMatches(host.Name(vh), useGatewaySemantics) {
-				importedVirtualServices = append(importedVirtualServices, vs)
-				vsset.Insert(key)
-				return
-			}
-		}
-	}
-
+	// Inline the addVirtualService logic to avoid closure allocation
 	wnsImportedHosts, wnsFound := hostsByNamespace[wildcardNamespace]
+
 	var loopAndAdd func(vses []config.Config)
 	if features.UnifiedSidecarScoping {
 		loopAndAdd = func(vses []config.Config) {
@@ -64,21 +54,37 @@ func SelectVirtualServices(vsidx virtualServiceIndex, configNamespace string, ho
 					if gwMatch != gwExact {
 						continue
 					}
-					configNamespace := c.Namespace
-					// Selection algorithm:
-					// virtualservices have a list of hosts in the API spec
-					// if any host in the list matches one service hostname, select the virtual service
-					// and break out of the loop.
+
+					key := c.NamespacedName()
+					if _, exists := vsset[key]; exists {
+						continue
+					}
+
+					rule := c.Spec.(*networking.VirtualService)
+					useGatewaySemantics := UseGatewaySemantics(c)
 
 					// Check if there is an explicit import of form ns/* or ns/host
-					if importedHosts, nsFound := hostsByNamespace[configNamespace]; nsFound {
-						addVirtualService(c, importedHosts)
+					if importedHosts, nsFound := hostsByNamespace[c.Namespace]; nsFound {
+						for _, vh := range rule.Hosts {
+							if importedHosts.VSMatches(host.Name(vh), useGatewaySemantics) {
+								importedVirtualServices = append(importedVirtualServices, c)
+								vsset[key] = struct{}{}
+								goto nextVS // Use goto to avoid nested loops
+							}
+						}
 					}
 
 					// Check if there is an import of form */host or */*
 					if wnsFound {
-						addVirtualService(c, wnsImportedHosts)
+						for _, vh := range rule.Hosts {
+							if wnsImportedHosts.VSMatches(host.Name(vh), useGatewaySemantics) {
+								importedVirtualServices = append(importedVirtualServices, c)
+								vsset[key] = struct{}{}
+								goto nextVS // Use goto to avoid nested loops
+							}
+						}
 					}
+				nextVS:
 				}
 			}
 		}
@@ -86,21 +92,36 @@ func SelectVirtualServices(vsidx virtualServiceIndex, configNamespace string, ho
 		// Legacy path
 		loopAndAdd = func(vses []config.Config) {
 			for _, c := range vses {
-				configNamespace := c.Namespace
-				// Selection algorithm:
-				// virtualservices have a list of hosts in the API spec
-				// if any host in the list matches one service hostname, select the virtual service
-				// and break out of the loop.
+				key := c.NamespacedName()
+				if _, exists := vsset[key]; exists {
+					continue
+				}
+
+				rule := c.Spec.(*networking.VirtualService)
+				useGatewaySemantics := UseGatewaySemantics(c)
 
 				// Check if there is an explicit import of form ns/* or ns/host
-				if importedHosts, nsFound := hostsByNamespace[configNamespace]; nsFound {
-					addVirtualService(c, importedHosts)
+				if importedHosts, nsFound := hostsByNamespace[c.Namespace]; nsFound {
+					for _, vh := range rule.Hosts {
+						if importedHosts.VSMatches(host.Name(vh), useGatewaySemantics) {
+							importedVirtualServices = append(importedVirtualServices, c)
+							vsset[key] = struct{}{}
+							goto nextVS // Use goto to avoid nested loops
+						}
+					}
 				}
 
 				// Check if there is an import of form */host or */*
 				if wnsFound {
-					addVirtualService(c, wnsImportedHosts)
+					for _, vh := range rule.Hosts {
+						if wnsImportedHosts.VSMatches(host.Name(vh), useGatewaySemantics) {
+							importedVirtualServices = append(importedVirtualServices, c)
+							vsset[key] = struct{}{}
+							goto nextVS // Use goto to avoid nested loops
+						}
+					}
 				}
+			nextVS:
 			}
 		}
 	}
