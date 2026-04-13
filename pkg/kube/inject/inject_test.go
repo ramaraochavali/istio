@@ -38,6 +38,7 @@ import (
 	proxyConfig "istio.io/api/networking/v1beta1"
 	opconfig "istio.io/istio/operator/pkg/apis"
 	"istio.io/istio/pilot/pkg/features"
+	common_features "istio.io/istio/pkg/features"
 	"istio.io/istio/pilot/pkg/model"
 	"istio.io/istio/pilot/test/util"
 	"istio.io/istio/pkg/config/constants"
@@ -598,6 +599,13 @@ func TestInjection(t *testing.T) {
 						},
 					},
 				})
+			},
+		},
+		{
+			in:   "hello.yaml",
+			want: "hello-fips-140-3.yaml.injected",
+			setup: func(t test.Failer) {
+				test.SetForTest(t, &common_features.CompliancePolicy, "fips-140-3")
 			},
 		},
 	}
