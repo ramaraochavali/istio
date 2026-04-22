@@ -11,7 +11,9 @@ releaseNotes:
     Go components (istiod, istio-agent) must be built with Go 1.24+ using
     `GOFIPS140=v1.0.0` (or later validated version) to enable the native Go FIPS 140-3
     cryptographic module. The `GODEBUG=fips140=only` environment variable is automatically
-    injected at runtime.
+    injected at runtime for sidecars, gateways, and the istiod control plane when
+    `COMPLIANCE_POLICY` is configured via the Helm `env` value
+    (e.g., `--set pilot.env.COMPLIANCE_POLICY=fips-140-3`).
     Note: `GOEXPERIMENT=boringcrypto` (used for FIPS 140-2) is incompatible with this
     policy and must not be used. BoringCrypto targets FIPS 140-2 only and conflicts with
     Go's native FIPS 140-3 module.
